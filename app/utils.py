@@ -18,6 +18,44 @@ with open("app/models/aspects.pkl", "rb") as f:
     aspects = pickle.load(f)
 
 
+aspects = {
+    "food": [
+        "food",
+        "meal",
+        "dish",
+        "taste",
+        "flavor",
+        "spice",
+        "cuisine",
+        "portion",
+        "presentation",
+    ],
+    "service": ["waiter", "staff", "service", "manager", "rude", "polite", "attentive"],
+    "price": [
+        "price",
+        "expensive",
+        "cheap",
+        "cost",
+        "value",
+        "affordable",
+        "overpriced",
+    ],
+    "ambience": [
+        "ambience",
+        "atmosphere",
+        "music",
+        "decor",
+        "environment",
+        "vibe",
+        "lighting",
+    ],
+    "cleanliness": ["clean", "dirty", "hygiene", "sanitary", "neat", "smelly"],
+    "location": ["location", "area", "parking", "nearby", "reachable"],
+    "drinks": ["drink", "juice", "beverage", "wine", "coffee", "tea"],
+    "timeliness": ["wait", "late", "delay", "time", "slow", "fast"],
+}
+
+
 def clean_texts(texts):
     return [
         re.sub(r"\s+", " ", t.strip())
@@ -69,19 +107,24 @@ def fetch_responses_from_db():
 
 
 def get_aspect_sentiments(review, aspects):
-    if isinstance(review, list):
-        review = " ".join(review)
-        blob = TextBlob(review)
+    if not review.strip():
+        return {}
 
-    sentiments = {}
-    for aspect, keywords in aspects.items():
-        scores = []
-        for sentence in blob.sentences:
-            if any(keyword in sentence.lower() for keyword in keywords):
-                scores.append(sentence.sentiment.polarity)
-        if scores:
-            sentiments[aspect] = round(sum(scores) / len(scores), 2)
-    return sentiments
+    blob = TextBlob(review)  # ✅ Make sure this is always defined
+
+    aspect_scores = {aspect: [] for aspect in aspects}
+
+    for sentence in blob.sentences:
+        lower_sentence = sentence.lower()
+        for aspect, keywords in aspects.items():
+            if any(keyword in lower_sentence for keyword in keywords):
+                aspect_scores[aspect].append(sentence.sentiment.polarity)
+
+    return {
+        aspect: round(sum(scores) / len(scores), 2)
+        for aspect, scores in aspect_scores.items()
+        if scores
+    }
 
 
 def predict_sentiments(texts):

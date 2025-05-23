@@ -1,4 +1,5 @@
-from flask import Blueprint, request, jsonify
+from flask import Blueprint, request, jsonify, render_template
+from flask import jsonify
 from .db import get_db
 from .utils import (
     extract_top_phrases_from_reviews,
@@ -6,14 +7,15 @@ from .utils import (
     get_aspect_sentiments,
     predict_sentiments,
     get_feedbacks_for_bulk_analysis,
-    validate_json_keys,
-    clean_texts,
 )
 from app.utils import get_aspect_sentiments
 import pickle
 import joblib
 
 bp = Blueprint("routes", __name__)
+
+
+######## Load Models ########
 
 
 # Load Models
@@ -26,7 +28,48 @@ with open("app/models/ngram_vectorizer.pkl", "rb") as f:
 with open("app/models/aspects.pkl", "rb") as f:
     aspects = pickle.load(f)
 
-# Existing routes...
+
+# If you want to use/update the aspects dictionary directly in this file, you can define it here instead of loading from a pickle file.
+
+# aspects = {
+#     "food": [
+#         "food",
+#         "meal",
+#         "dish",
+#         "taste",
+#         "flavor",
+#         "spice",
+#         "cuisine",
+#         "portion",
+#         "presentation",
+#     ],
+#     "service": ["waiter", "staff", "service", "manager", "rude", "polite", "attentive"],
+#     "price": [
+#         "price",
+#         "expensive",
+#         "cheap",
+#         "cost",
+#         "value",
+#         "affordable",
+#         "overpriced",
+#     ],
+#     "ambience": [
+#         "ambience",
+#         "atmosphere",
+#         "music",
+#         "decor",
+#         "environment",
+#         "vibe",
+#         "lighting",
+#     ],
+#     "cleanliness": ["clean", "dirty", "hygiene", "sanitary", "neat", "smelly"],
+#     "location": ["location", "area", "parking", "nearby", "reachable"],
+#     "drinks": ["drink", "juice", "beverage", "wine", "coffee", "tea"],
+#     "timeliness": ["wait", "late", "delay", "time", "slow", "fast"],
+# }
+
+
+######## Routes ########
 
 
 @bp.route("/")
@@ -34,7 +77,24 @@ def home():
     return jsonify({"message": "Welcome to the Feedback Analysis API!"})
 
 
-@bp.route("/test-db")
+@bp.route("/chart")
+def chart():
+    feedbacks = fetch_responses_from_db()
+    sentiment_data = predict_sentiments(feedbacks)
+    if not sentiment_data:
+        return jsonify({"error": "No feedback data available for analysis"}), 400
+    # print(sentiment_data)
+    sentiment_counts = {"positive": 0, "neutral": 0, "negative": 0}
+    for entry in sentiment_data:
+        sentiment = entry["sentiment"]
+        if sentiment in sentiment_counts:
+            sentiment_counts[sentiment] += 1
+
+    return render_template("chart.html", counts=sentiment_counts)
+
+
+# Route to test database connection
+@bp.route("/test_db")
 def test_db():
     db = get_db()
     cursor = db.cursor(dictionary=True)
@@ -45,6 +105,7 @@ def test_db():
     return jsonify(data)
 
 
+# Route to analyze sentiment for a single feedback
 @bp.route("/analyze", methods=["POST"])
 def analyze_sentiment():
     data = request.get_json()
@@ -58,6 +119,7 @@ def analyze_sentiment():
     return jsonify({"text": text, "sentiment": prediction})
 
 
+# New route to analyze sentiment for bulk feedbacks
 @bp.route("/analyze_bulk", methods=["POST"])
 def analyze_bulk():
     """
@@ -77,10 +139,9 @@ def analyze_bulk():
     results = predict_sentiments(feedbacks_to_analyze)
     return jsonify({"results": results})
 
-
-# New route to fetch responses from DB and analyze them internally
-@bp.route("/analyze-db-feedback", methods=["GET"])
-def analyze_db_feedback():
+    # # New route to fetch responses from DB and analyze them internally
+    # @bp.route("/analyze-db-feedback", methods=["GET"])
+    # def analyze_db_feedback():
     db = get_db()
     cursor = db.cursor(dictionary=True)
     cursor.execute(
@@ -105,6 +166,7 @@ def analyze_db_feedback():
     return jsonify({"results": results})
 
 
+# Frequent Phrases in Feedback Extraction
 @bp.route("/frequent_phrases", methods=["POST"])
 def extract_frequent_phrases():
     reviews = fetch_responses_from_db()
@@ -123,28 +185,32 @@ def extract_frequent_phrases():
     return jsonify({"top_phrases": top_phrases})
 
 
-@bp.route("/aspect-analysis", methods=["POST"])
+# Aspect-based Sentiment Analysis
+@bp.route("/aspect_analysis", methods=["POST"])
 def aspect_analysis():
     """Perform aspect-based sentiment analysis on reviews."""
-    data = get_feedbacks_for_bulk_analysis()
+    reviews = get_feedbacks_for_bulk_analysis()
 
-    valid, error = validate_json_keys(data, ["response"])
-    if not valid:
-        return jsonify({"error": error}), 400
-
-    reviews = data["reviews"]
     if not isinstance(reviews, list) or not all(
         isinstance(r, str) and r.strip() for r in reviews
     ):
-        return jsonify({"error": "Reviews must be a list of non-empty strings"}), 400
+        return jsonify({"error": "Expected a list of non-empty review strings"}), 400
 
-    combined = {}
+    combined_scores = {}
     for review in reviews:
         sentiments = get_aspect_sentiments(review, aspects)
         for aspect, score in sentiments.items():
-            combined.setdefault(aspect, []).append(score)
+            combined_scores.setdefault(aspect, []).append(score)
 
-    avg_scores = {k: round(sum(v) / len(v), 2) for k, v in combined.items()}
-    # Convert from [-1,1] sentiment score to 1-5 star rating scale
-    star_ratings = {k: round(((v + 1) / 2) * 4 + 1, 1) for k, v in avg_scores.items()}
+    avg_scores = {
+        aspect: round(sum(scores) / len(scores), 2)
+        for aspect, scores in combined_scores.items()
+        if scores
+    }
+
+    star_ratings = {
+        aspect: round(((score + 1) / 2) * 4 + 1, 1)
+        for aspect, score in avg_scores.items()
+    }
+
     return jsonify(star_ratings)

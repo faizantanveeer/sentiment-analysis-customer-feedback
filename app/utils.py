@@ -18,44 +18,6 @@ with open("app/models/aspects.pkl", "rb") as f:
     aspects = pickle.load(f)
 
 
-aspects = {
-    "food": [
-        "food",
-        "meal",
-        "dish",
-        "taste",
-        "flavor",
-        "spice",
-        "cuisine",
-        "portion",
-        "presentation",
-    ],
-    "service": ["waiter", "staff", "service", "manager", "rude", "polite", "attentive"],
-    "price": [
-        "price",
-        "expensive",
-        "cheap",
-        "cost",
-        "value",
-        "affordable",
-        "overpriced",
-    ],
-    "ambience": [
-        "ambience",
-        "atmosphere",
-        "music",
-        "decor",
-        "environment",
-        "vibe",
-        "lighting",
-    ],
-    "cleanliness": ["clean", "dirty", "hygiene", "sanitary", "neat", "smelly"],
-    "location": ["location", "area", "parking", "nearby", "reachable"],
-    "drinks": ["drink", "juice", "beverage", "wine", "coffee", "tea"],
-    "timeliness": ["wait", "late", "delay", "time", "slow", "fast"],
-}
-
-
 def clean_texts(texts):
     return [
         re.sub(r"\s+", " ", t.strip())

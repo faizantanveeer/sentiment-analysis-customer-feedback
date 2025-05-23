@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Sentiment Chart</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+    <h2>Sentiment Analysis Results</h2>
+    <canvas id="sentimentChart" width="400" height="200"></canvas>
+
+    <script>
+        const data = {
+            labels: ['Positive', 'Neutral', 'Negative'],
+            datasets: [{
+                label: 'Sentiment Distribution',
+                data: [
+                    {{ counts.positive }},
+                    {{ counts.neutral }},
+                    {{ counts.negative }}
+                ],
+                backgroundColor: [
+                    'rgba(75, 192, 192, 0.6)',   // Positive - greenish
+                    'rgba(201, 203, 207, 0.6)',  // Neutral - gray
+                    'rgba(255, 99, 132, 0.6)'    // Negative - red
+                ],
+                borderColor: [
+                    'rgba(75, 192, 192, 1)',
+                    'rgba(201, 203, 207, 1)',
+                    'rgba(255, 99, 132, 1)'
+                ],
+                borderWidth: 1
+            }]
+        };
+
+        const config = {
+            type: 'bar',
+            data: data,
+            options: {
+                responsive: true,
+                scales: {
+                    y: {
+                        beginAtZero: true,
+                        ticks: {
+                            precision: 0
+                        }
+                    }
+                }
+            }
+        };
+
+        new Chart(document.getElementById('sentimentChart'), config);
+    </script>
+</body>
+</html>

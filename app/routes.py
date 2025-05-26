@@ -11,6 +11,9 @@ from .utils import (
 from app.utils import get_aspect_sentiments
 import pickle
 import joblib
+from collections import defaultdict
+from datetime import datetime
+
 
 bp = Blueprint("routes", __name__)
 
@@ -147,6 +150,7 @@ def chart():
 def client_chart():
     data = request.get_json(force=True)
     client_id = data.get("client_id")
+    location_id = data.get("location_id")  # optional
 
     if not client_id:
         return jsonify({"error": "client_id is required"}), 400
@@ -155,41 +159,62 @@ def client_chart():
     cursor = db.cursor(dictionary=True)
 
     query = """
-    SELECT r.response
-    FROM responsend r
-    JOIN locations l ON r.locationID = l.ID
-    JOIN hieararchylevels h ON l.hiearchylevelID = h.ID
-    JOIN (
-        SELECT f.client_id, MAX(hh.level) AS max_level
-        FROM formats f
-        JOIN hieararchylevels hh ON f.assignHiearchy = hh.hiearchyid
-        WHERE f.client_id = %(client_id)s
-        GROUP BY f.client_id
-    ) max_h ON h.level = max_h.max_level AND max_h.client_id = %(client_id)s
-    JOIN formats f ON f.assignHiearchy = h.hiearchyid
-    JOIN users u ON u.id = f.client_id
-    WHERE u.role_id = 2 AND f.client_id = %(client_id)s;
+        SELECT r.response,
+        DATE(r.Date) AS created_date
+        FROM responsend r
+        JOIN locations l ON r.locationID = l.ID
+        JOIN hieararchylevels h ON l.hiearchylevelID = h.ID
+        JOIN (
+            SELECT f.client_id, MAX(hh.level) AS max_level
+            FROM formats f
+            JOIN hieararchylevels hh ON f.assignHiearchy = hh.hiearchyid
+            WHERE f.client_id = %(client_id)s
+            GROUP BY f.client_id
+        ) max_h ON h.level = max_h.max_level AND max_h.client_id = %(client_id)s
+        JOIN formats f ON f.assignHiearchy = h.hiearchyid
+        JOIN users u ON u.id = f.client_id
+        WHERE u.role_id = 2 AND f.client_id = %(client_id)s
+        {location_filter};
     """
 
-    cursor.execute(query, {"client_id": client_id})
+    params = {"client_id": client_id}
+    location_filter = ""
+
+    if location_id:
+        location_filter = "AND r.locationID = %(location_id)s"
+        params["location_id"] = location_id
+
+    query = query.format(location_filter=location_filter)
+    cursor.execute(query, params)
     rows = cursor.fetchall()
 
     if not rows:
         return jsonify({"error": "No responses found"}), 404
 
-    feedbacks = [row["response"] for row in rows if row["response"]]
+    feedbacks = [
+        {"response": row["response"], "date": row["created_date"]}
+        for row in rows
+        if row["response"]
+    ]
 
     if not feedbacks:
         return jsonify({"error": "No valid responses"}), 404
 
     # --- Sentiment Analysis ---
-    vectorized = vectorizer.transform(feedbacks)
+    response_texts = [item["response"] for item in feedbacks]
+
+    dates = [item["date"] for item in feedbacks]
+
+    vectorized = vectorizer.transform(response_texts)
     predictions = model.predict(vectorized)
 
+    # Map numeric labels to readable ones
+    # label_map = {0: "negative", 1: "neutral", 2: "positive"}
+    sentiments = predictions.tolist()
+
     sentiment_counts = {"positive": 0, "neutral": 0, "negative": 0}
-    for sentiment in predictions:
-        if sentiment in sentiment_counts:
-            sentiment_counts[sentiment] += 1
+    for sent in sentiments:
+        sentiment_counts[sent] += 1
 
     sentiment_chart = {
         "title": "Sentiment Distribution",
@@ -200,9 +225,9 @@ def client_chart():
 
     # --- Aspect-Based Ratings ---
     combined_scores = {}
-    for review in feedbacks:
-        sentiments = get_aspect_sentiments(review, aspects)
-        for aspect, score in sentiments.items():
+    for review in response_texts:
+        sentiments_map = get_aspect_sentiments(review, aspects)
+        for aspect, score in sentiments_map.items():
             combined_scores.setdefault(aspect, []).append(score)
 
     def map_to_5_star(score):
@@ -216,13 +241,13 @@ def client_chart():
 
     aspect_chart = {
         "title": "Aspect-Based Ratings",
-        "type": "polarArea",
+        "type": "polarArea",  # or 'radar'
         "labels": list(avg_scores.keys()),
         "data": list(avg_scores.values()),
     }
 
-    # --- Frequent Phrases (Internal function call) ---
-    top_phrases = extract_top_phrases_from_reviews(feedbacks)
+    # --- Frequent Phrases ---
+    top_phrases = extract_top_phrases_from_reviews(response_texts)
     phrases_chart = {
         "title": "Most Frequent Phrases",
         "type": "bar",
@@ -231,7 +256,67 @@ def client_chart():
         "options": {"indexAxis": "y"},
     }
 
-    return jsonify({"charts": [sentiment_chart, aspect_chart, phrases_chart]})
+    # --- Sentiment Trend Chart ---
+    # Build: { "YYYY-MM": {"positive": 2, "neutral": 1, "negative": 0} }
+    monthly_counts = defaultdict(lambda: {"positive": 0, "neutral": 0, "negative": 0})
+
+    for i, pred in enumerate(predictions):
+        date_str = dates[i]
+        dt = (
+            date_str
+            if isinstance(date_str, datetime)
+            else datetime.strptime(str(date_str), "%Y-%m-%d")
+        )
+        key = dt.strftime("%Y-%m")  # e.g., "2025-04"
+        if pred in monthly_counts[key]:
+            monthly_counts[key][pred] += 1
+
+    # Sort by month
+    sorted_months = sorted(monthly_counts.keys())
+
+    # Convert to percentage format
+    trend_labels = sorted_months
+    trend_data = {"positive": [], "neutral": [], "negative": []}
+
+    for month in trend_labels:
+        total = sum(monthly_counts[month].values())
+        for sentiment in trend_data:
+            count = monthly_counts[month][sentiment]
+            percent = round((count / total) * 100 if total > 0 else 0, 2)
+            trend_data[sentiment].append(percent)
+
+    # Final trend chart for frontend
+    trend_chart = {
+        "title": "Sentiment Trend Over Time",
+        "type": "line",
+        "labels": trend_labels,
+        "datasets": [
+            {
+                "label": "Positive",
+                "data": trend_data["positive"],
+                "borderColor": "green",
+                "fill": False,
+            },
+            {
+                "label": "Neutral",
+                "data": trend_data["neutral"],
+                "borderColor": "orange",
+                "fill": False,
+            },
+            {
+                "label": "Negative",
+                "data": trend_data["negative"],
+                "borderColor": "red",
+                "fill": False,
+            },
+        ],
+    }
+
+    print(trend_chart)
+
+    return jsonify(
+        {"charts": [sentiment_chart, aspect_chart, phrases_chart, trend_chart]}
+    )
 
 
 # Route to test database connection
@@ -240,7 +325,7 @@ def test_db():
     db = get_db()
     cursor = db.cursor(dictionary=True)
     cursor.execute(
-        "SELECT r.response FROM responsend r JOIN  responsendenddata rd ON r.respondentID = rd.id ORDER BY rd.id, r.created_at;"
+        "SELECT r.response, Date(r.Date) as date FROM responsend r JOIN  responsendenddata rd ON r.respondentID = rd.id ORDER BY rd.id, r.created_at;"
     )
     data = cursor.fetchall()
     return jsonify(data)
@@ -257,6 +342,7 @@ def analyze_sentiment():
 
     vector = vectorizer.transform([text])
     prediction = model.predict(vector)[0]
+
     return jsonify({"text": text, "sentiment": prediction})
 
 

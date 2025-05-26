@@ -92,9 +92,8 @@ def chart():
 
     return jsonify(sentiment_counts)
 
-
-@bp.route("/client_chart", methods=["POST"])
-def client_chart():
+    # @bp.route("/client_chart", methods=["POST"])
+    # def client_chart():
     data = request.get_json(force=True)
     client_id = data.get("client_id")
 
@@ -121,7 +120,6 @@ def client_chart():
     WHERE u.role_id = 2 AND f.client_id = %(client_id)s;
 
     """
-
     cursor.execute(query, {"client_id": client_id})
 
     rows = cursor.fetchall()
@@ -142,8 +140,98 @@ def client_chart():
     for sentiment in predictions:
         if sentiment in sentiment_counts:
             sentiment_counts[sentiment] += 1
-
     return jsonify(sentiment_counts)
+
+
+@bp.route("/client_chart", methods=["POST"])
+def client_chart():
+    data = request.get_json(force=True)
+    client_id = data.get("client_id")
+
+    if not client_id:
+        return jsonify({"error": "client_id is required"}), 400
+
+    db = get_db()
+    cursor = db.cursor(dictionary=True)
+
+    query = """
+    SELECT r.response
+    FROM responsend r
+    JOIN locations l ON r.locationID = l.ID
+    JOIN hieararchylevels h ON l.hiearchylevelID = h.ID
+    JOIN (
+        SELECT f.client_id, MAX(hh.level) AS max_level
+        FROM formats f
+        JOIN hieararchylevels hh ON f.assignHiearchy = hh.hiearchyid
+        WHERE f.client_id = %(client_id)s
+        GROUP BY f.client_id
+    ) max_h ON h.level = max_h.max_level AND max_h.client_id = %(client_id)s
+    JOIN formats f ON f.assignHiearchy = h.hiearchyid
+    JOIN users u ON u.id = f.client_id
+    WHERE u.role_id = 2 AND f.client_id = %(client_id)s;
+    """
+
+    cursor.execute(query, {"client_id": client_id})
+    rows = cursor.fetchall()
+
+    if not rows:
+        return jsonify({"error": "No responses found"}), 404
+
+    feedbacks = [row["response"] for row in rows if row["response"]]
+
+    if not feedbacks:
+        return jsonify({"error": "No valid responses"}), 404
+
+    # --- Sentiment Analysis ---
+    vectorized = vectorizer.transform(feedbacks)
+    predictions = model.predict(vectorized)
+
+    sentiment_counts = {"positive": 0, "neutral": 0, "negative": 0}
+    for sentiment in predictions:
+        if sentiment in sentiment_counts:
+            sentiment_counts[sentiment] += 1
+
+    sentiment_chart = {
+        "title": "Sentiment Distribution",
+        "type": "bar",
+        "labels": list(sentiment_counts.keys()),
+        "data": list(sentiment_counts.values()),
+    }
+
+    # --- Aspect-Based Ratings ---
+    combined_scores = {}
+    for review in feedbacks:
+        sentiments = get_aspect_sentiments(review, aspects)
+        for aspect, score in sentiments.items():
+            combined_scores.setdefault(aspect, []).append(score)
+
+    def map_to_5_star(score):
+        return round(((score + 1) / 2) * 4 + 1, 2)
+
+    avg_scores = {
+        aspect: map_to_5_star(sum(scores) / len(scores))
+        for aspect, scores in combined_scores.items()
+        if scores
+    }
+
+    aspect_chart = {
+        "title": "Aspect-Based Ratings",
+        "type": "polarArea",
+        "labels": list(avg_scores.keys()),
+        "data": list(avg_scores.values()),
+    }
+
+    # --- Frequent Phrases (Internal function call) ---
+    top_phrases = extract_top_phrases_from_reviews(feedbacks)
+    phrases_chart = {
+        "title": "Most Frequent Phrases",
+        "type": "bar",
+        "labels": [p[0] for p in top_phrases],
+        "data": [p[1] for p in top_phrases],
+        "options": {"indexAxis": "y"},
+    }
+
+    return jsonify({"charts": [sentiment_chart, aspect_chart, phrases_chart]})
 
 
 # Route to test database connection

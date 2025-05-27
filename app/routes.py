@@ -13,6 +13,7 @@ import pickle
 import joblib
 from collections import defaultdict
 from datetime import datetime
+from collections import Counter
 
 
 bp = Blueprint("routes", __name__)
@@ -152,29 +153,33 @@ def client_chart():
     client_id = data.get("client_id")
     location_id = data.get("location_id")  # optional
 
-    if not client_id:
-        return jsonify({"error": "client_id is required"}), 400
+    print("client_id:", client_id)
+
+    # if not client_id:
+    #     return jsonify({"error": "client_id is required"}), 400
 
     db = get_db()
     cursor = db.cursor(dictionary=True)
 
     query = """
-        SELECT r.response,
-        DATE(r.Date) AS created_date
-        FROM responsend r
-        JOIN locations l ON r.locationID = l.ID
-        JOIN hieararchylevels h ON l.hiearchylevelID = h.ID
-        JOIN (
-            SELECT f.client_id, MAX(hh.level) AS max_level
-            FROM formats f
-            JOIN hieararchylevels hh ON f.assignHiearchy = hh.hiearchyid
-            WHERE f.client_id = %(client_id)s
-            GROUP BY f.client_id
-        ) max_h ON h.level = max_h.max_level AND max_h.client_id = %(client_id)s
-        JOIN formats f ON f.assignHiearchy = h.hiearchyid
-        JOIN users u ON u.id = f.client_id
-        WHERE u.role_id = 2 AND f.client_id = %(client_id)s
-        {location_filter};
+    SELECT r.response,
+           DATE(r.Date) AS created_date
+    FROM responsend r
+    JOIN locations l ON r.locationID = l.ID
+    JOIN hieararchylevels h ON l.hiearchylevelID = h.ID
+    JOIN (
+        SELECT f.client_id, MAX(hh.level) AS max_level
+        FROM formats f
+        JOIN hieararchylevels hh ON f.assignHiearchy = hh.hiearchyid
+        WHERE (%(client_id)s IS NULL OR f.client_id = %(client_id)s)
+        GROUP BY f.client_id
+    ) max_h ON h.level = max_h.max_level 
+           AND (%(client_id)s IS NULL OR max_h.client_id = %(client_id)s)
+    JOIN formats f ON f.assignHiearchy = h.hiearchyid
+    JOIN users u ON u.id = f.client_id
+    WHERE u.role_id = 2 
+      AND (%(client_id)s IS NULL OR f.client_id = %(client_id)s)
+    {location_filter};
     """
 
     params = {"client_id": client_id}
@@ -187,6 +192,8 @@ def client_chart():
     query = query.format(location_filter=location_filter)
     cursor.execute(query, params)
     rows = cursor.fetchall()
+
+    print("Fetched rows:", len(rows))
 
     if not rows:
         return jsonify({"error": "No responses found"}), 404
@@ -258,64 +265,101 @@ def client_chart():
 
     # --- Sentiment Trend Chart ---
     # Build: { "YYYY-MM": {"positive": 2, "neutral": 1, "negative": 0} }
+
+    sentiment_counts = Counter(predictions)
+    total = len(predictions)
+
+    sentiment_percentages = {
+        sentiment: round((count / total) * 100, 2)
+        for sentiment, count in sentiment_counts.items()
+    }
+
+    sentiment_dist_chart = {
+        "title": "Sentiment Distribution",
+        "type": "pie",
+        "labels": list(sentiment_percentages.keys()),
+        "data": list(sentiment_percentages.values()),
+        "options": {
+            "scales": {
+                "y": {
+                    "beginAtZero": True,
+                    "max": 100,
+                    "title": {"display": True, "text": "Percentage (%)"},
+                }
+            }
+        },
+    }
+
+    # Count sentiments per month
     monthly_counts = defaultdict(lambda: {"positive": 0, "neutral": 0, "negative": 0})
 
-    for i, pred in enumerate(predictions):
-        date_str = dates[i]
-        dt = (
-            date_str
-            if isinstance(date_str, datetime)
-            else datetime.strptime(str(date_str), "%Y-%m-%d")
-        )
-        key = dt.strftime("%Y-%m")  # e.g., "2025-04"
-        if pred in monthly_counts[key]:
-            monthly_counts[key][pred] += 1
+    for i, sentiment in enumerate(predictions):
+        date_obj = dates[i]
+        if not isinstance(date_obj, datetime):
+            date_obj = datetime.strptime(str(date_obj), "%Y-%m-%d")
+        key = date_obj.strftime("%b-%Y")  # e.g., Apr-2025
+        monthly_counts[key][sentiment] += 1
 
-    # Sort by month
+    # Sort months chronologically
     sorted_months = sorted(monthly_counts.keys())
 
-    # Convert to percentage format
-    trend_labels = sorted_months
+    # Convert to percentages
     trend_data = {"positive": [], "neutral": [], "negative": []}
-
-    for month in trend_labels:
+    for month in sorted_months:
         total = sum(monthly_counts[month].values())
         for sentiment in trend_data:
-            count = monthly_counts[month][sentiment]
-            percent = round((count / total) * 100 if total > 0 else 0, 2)
+            percent = (
+                round((monthly_counts[month][sentiment] / total) * 100, 2)
+                if total
+                else 0
+            )
             trend_data[sentiment].append(percent)
 
-    # Final trend chart for frontend
+    # print("Monthly Sentiment Trend (%):")
+    # for i, month in enumerate(sorted_months):
+    #     print(f"{month}:")
+    #     for sentiment in trend_data:
+    #         print(f"  {sentiment}: {trend_data[sentiment][i]}%")
+
     trend_chart = {
         "title": "Sentiment Trend Over Time",
         "type": "line",
-        "labels": trend_labels,
+        "labels": sorted_months,
         "datasets": [
             {
                 "label": "Positive",
                 "data": trend_data["positive"],
                 "borderColor": "green",
                 "fill": False,
+                "tension": 0.3,
             },
             {
                 "label": "Neutral",
                 "data": trend_data["neutral"],
                 "borderColor": "orange",
                 "fill": False,
+                "tension": 0.3,
             },
             {
                 "label": "Negative",
                 "data": trend_data["negative"],
                 "borderColor": "red",
                 "fill": False,
+                "tension": 0.3,
             },
         ],
     }
 
-    print(trend_chart)
-
     return jsonify(
-        {"charts": [sentiment_chart, aspect_chart, phrases_chart, trend_chart]}
+        {
+            "charts": [
+                sentiment_chart,
+                aspect_chart,
+                phrases_chart,
+                trend_chart,
+                sentiment_dist_chart,
+            ]
+        }
     )
 
 

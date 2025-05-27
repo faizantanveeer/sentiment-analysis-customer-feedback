@@ -27,7 +27,7 @@ def clean_texts(texts):
 
 
 def extract_top_phrases_from_reviews(
-    reviews, ngram_range=(2, 3), max_features=2000, top_n=15
+    reviews, ngram_range=(2, 3), max_features=1000, top_n=15
 ):
     if not reviews:
         return []
@@ -47,7 +47,30 @@ def extract_top_phrases_from_reviews(
         reverse=True,
     )[:top_n]
 
-    return [(p, int(c)) for p, c in phrases]
+    sum_words = X.sum(axis=0)
+    phrases = sorted(
+        [(word, sum_words[0, idx]) for word, idx in vec.vocabulary_.items()],
+        key=lambda x: x[1],
+        reverse=True,
+    )
+
+    # Remove phrases that are substrings of longer, more frequent phrases
+    unique_phrases = []
+    seen = set()
+    for phrase, count in phrases:
+        if any(phrase in longer for longer, _ in unique_phrases):
+            continue
+        # Filter out phrases that are too short or not meaningful
+        if len(phrase.split()) < 2:
+            continue
+        if phrase in seen:
+            continue
+        unique_phrases.append((phrase, int(count)))
+        seen.add(phrase)
+        if len(unique_phrases) >= top_n:
+            break
+
+    return unique_phrases
 
 
 def fetch_responses_from_db():
